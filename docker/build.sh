@@ -4,12 +4,8 @@ set -euo pipefail
 TAG=ocr-v2-cli-py310
 DOCKERFILE=docker/Dockerfile
 
-if command -v podman &>/dev/null; then
-    RUNTIME=podman
-elif command -v docker &>/dev/null; then
-    RUNTIME=docker
-else
-    echo "Error: neither podman nor docker found" >&2
+if ! command -v podman &>/dev/null; then
+    echo "Error: podman not found" >&2
     exit 1
 fi
 
@@ -27,5 +23,5 @@ wget -nc https://lab.ndl.go.jp/dataset/ndlocr_v2/ndl_layout/ndl_retrainmodel.pth
 wget -nc https://lab.ndl.go.jp/dataset/ndlocr_v2/separate_pages_mmdet/epoch_180.pth \
     -P ./submodules/separate_pages_mmdet/models
 
-echo "Building with $RUNTIME ..."
-"$RUNTIME" build -t "$TAG" -f "$DOCKERFILE" .
+echo "Building ..."
+podman build -t "$TAG" -f "$DOCKERFILE" .
