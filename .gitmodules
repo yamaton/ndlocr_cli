@@ -32,5 +32,5 @@
 	branch = master
 [submodule "submodules/text_recognition_lightning"]
 	path = submodules/text_recognition_lightning
-	url = https://github.com/ndl-lab/text_recognition_lightning
-	branch = master
+	url = https://github.com/yamaton/text_recognition_lightning
+	branch = load-ckpt-once
