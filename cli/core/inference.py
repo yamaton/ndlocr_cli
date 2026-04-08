@@ -14,6 +14,8 @@ import time
 import xml
 import xml.etree.ElementTree as ET
 
+import torch
+
 from . import utils
 from .. import procs
 
@@ -217,6 +219,7 @@ class OcrInferrer:
                 continue
 
             print('######## START PAGE INFERENCE PROCESS ########')
+            torch.cuda.empty_cache()
             start_page = time.time()
 
             for proc in self.proc_list:
