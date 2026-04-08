@@ -20,8 +20,8 @@
 	branch = master
 [submodule "submodules/ndl_layout"]
 	path = submodules/ndl_layout
-	url = https://github.com/ndl-lab/ndl_layout
-	branch = master
+	url = git@github.com:yamaton/ndl_layout.git
+	branch = skip-unused-mask-transfer
 [submodule "submodules/reading_order"]
 	path = submodules/reading_order
 	url = https://github.com/ndl-lab/reading_order
