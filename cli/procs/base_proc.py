@@ -41,8 +41,6 @@ class BaseInferenceProcess:
 
         self.process_dump_dir = None
 
-        return True
-
     def do(self, data_idx, input_data):
         """
         推論処理を実行する際にOcrInferrerクラスから呼び出される推論実行関数。
@@ -291,15 +289,14 @@ class BaseInferenceProcess:
         """
         dump_img = None
         if 'dump_img' in single_result.keys():
-            dump_img = copy.deepcopy(single_result['dump_img'])
+            dump_img = single_result['dump_img'].copy()
         else:
-            dump_img = copy.deepcopy(single_result['img'])
+            dump_img = single_result['img'].copy()
         if 'xml' in single_result.keys() and single_result['xml'] is not None:
             # draw single inference result on input image
             # this should be implemeted in each child class
             cv2.putText(dump_img, 'dump' + self.proc_name, (0, 50),
                         cv2.FONT_HERSHEY_PLAIN, 4, (255, 0, 0), 5, cv2.LINE_AA)
-            pass
         else:
             cv2.putText(dump_img, 'dump' + self.proc_name, (0, 50),
                         cv2.FONT_HERSHEY_PLAIN, 4, (255, 255, 0), 5, cv2.LINE_AA)

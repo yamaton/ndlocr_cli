@@ -4,7 +4,6 @@
 # https://creativecommons.org/licenses/by/4.0/
 
 
-import copy
 import cv2
 import glob
 import os
@@ -98,7 +97,6 @@ class OcrInferrer:
             if single_outputdir_data_list is None:
                 print('[ERROR] Input data list is empty', file=sys.stderr)
                 continue
-            print(single_outputdir_data_list)
             # do infer with input data for single output data dir
             for single_outputdir_data in single_outputdir_data_list:
                 if single_outputdir_data is None:
@@ -184,113 +182,10 @@ class OcrInferrer:
             for single_data_output in single_image_file_output_for_txt:
                 main_txt, cap_txt = self._create_result_txt(single_data_output['xml'])
                 sum_main_txt += main_txt + '\n'
-                sum_cap_txt += sum_cap_txt + '\n'
+                sum_cap_txt += cap_txt + '\n'
                 sum_ruby_txt += single_data_output['ruby_txt'] + '\n'
 
                 self._save_pred_txt(sum_main_txt, sum_cap_txt, sum_ruby_txt, page_xml.attrib['IMAGENAME'], single_outputdir_data['output_dir'])
-
-            # add inference result for single image file data to pred_list, including XML data
-            pred_list.extend(single_image_file_output)
-            print('########  END PAGE INFERENCE PROCESS  ########')
-
-        return pred_list
-
-    def _infer(self, single_outputdir_data):
-        """
-        self.cfgに保存された設定に基づき、XML一つ分のデータに対する推論処理を実行します。
-
-        Parameters
-        ----------
-        single_outputdir_data : dict
-            XML一つ分のデータ（基本的に1書籍分を想定）の入力データ情報。
-            画像ファイルパスのリスト、それらに対応するXMLデータを含みます。
-
-        Returns
-        -------
-        pred_list : list
-            1ページ分の推論結果を要素に持つ推論結果のリスト。
-            各結果は辞書型で保持されています。
-        """
-        # single_outputdir_data dictionary include [key, value] pairs as below
-        # (xml is not always included)
-        #   [key, value]: ['img', numpy.ndarray], ['xml', xml_tree]
-        pred_list = []
-        pred_xml_dict_for_dump = {}
-        if self.cfg['dump']:
-            dump_dir = os.path.join(single_outputdir_data['output_dir'], 'dump')
-            os.makedirs(dump_dir, exist_ok=True)
-
-            for proc in self.proc_list:
-                pred_xml_dict_for_dump[proc.proc_name] = []
-                proc_dump_dir = os.path.join(dump_dir, proc.proc_name)
-                os.makedirs(proc_dump_dir, exist_ok=True)
-
-        for img_path in single_outputdir_data['img_list']:
-            single_image_file_data = self._get_single_image_file_data(img_path, single_outputdir_data)
-            output_dir = single_outputdir_data['output_dir']
-            if single_image_file_data is None:
-                print('[ERROR] Failed to get single page input data for image:{0}'.format(img_path), file=sys.stderr)
-                continue
-
-            print('######## START PAGE INFERENCE PROCESS ########')
-            torch.cuda.empty_cache()
-            start_page = time.time()
-
-            for proc in self.proc_list:
-                start_proc = time.time()
-                single_page_output = []
-                for idx, single_data_input in enumerate(single_image_file_data):
-                    single_data_output = proc.do(idx, single_data_input)
-                    single_page_output.extend(single_data_output)
-                # save inference result data to dump
-                if self.cfg['dump'] and 'xml' in single_image_file_data[0].keys():
-                    pred_xml_dict_for_dump[proc.proc_name].append(single_image_file_data[0]['xml'])
-
-                single_image_file_data = single_page_output
-                self.proc_time_statistics[proc.proc_name].append(time.time() - start_proc)
-
-            single_image_file_output = single_image_file_data
-            self.total_time_statistics.append(time.time() - start_page)
-
-            if self.cfg['save_image'] or self.cfg['partial_infer']:
-                # save inferenced result drawn image in pred_img directory
-                for single_data_output in single_image_file_output:
-                    # save input image while partial inference
-                    if self.cfg['partial_infer']:
-                        img_output_dir = os.path.join(output_dir, 'img')
-                        self._save_image(single_data_output['img'], single_data_output['img_file_name'], img_output_dir)
-
-                    pred_img = self._create_result_image(single_data_output, self.proc_list[-1].proc_name)
-                    img_output_dir = os.path.join(output_dir, 'pred_img')
-                    self._save_image(pred_img, single_data_output['img_file_name'], img_output_dir)
-
-            # save inferenced result text for this page
-            if self.cfg['proc_range']['end'] > 2:
-                sum_main_txt = ''
-                sum_cap_txt = ''
-                sum_ruby_txt = None
-                if self.cfg['ruby_read']:
-                    sum_ruby_txt = ''
-
-                # check if xml output for this image is vertical text
-                vertical_text_page = 0
-                for single_data_output in single_image_file_output:
-                    if self._is_vertical_text_xml(single_data_output['xml']):
-                        vertical_text_page += 1
-
-                # reverse order of page if it's vertical text
-                single_image_file_output_for_txt = single_image_file_output
-                if vertical_text_page >= len(single_image_file_output):
-                    single_image_file_output_for_txt = list(reversed(single_image_file_output))
-
-                for single_data_output in single_image_file_output_for_txt:
-                    main_txt, cap_txt = self._create_result_txt(single_data_output['xml'])
-                    sum_main_txt += main_txt + '\n'
-                    sum_cap_txt += sum_cap_txt + '\n'
-                    if self.cfg['ruby_read']:
-                        sum_ruby_txt += single_data_output['ruby_txt'] + '\n'
-
-                self._save_pred_txt(sum_main_txt, sum_cap_txt, sum_ruby_txt, os.path.basename(img_path), single_outputdir_data['output_dir'])
 
             # add inference result for single image file data to pred_list, including XML data
             pred_list.extend(single_image_file_output)
@@ -783,17 +678,11 @@ class OcrInferrer:
             重畳を行う結果を出力した推論処理の名前。
         """
         if 'dump_img' in result.keys():
-            dump_img = copy.deepcopy(result['dump_img'])
+            dump_img = result['dump_img'].copy()
         else:
-            dump_img = copy.deepcopy(result['img'])
-        if 'xml' in result.keys() and result['xml'] is not None:
-            # draw inference result on input image
-            cv2.putText(dump_img, proc_name, (0, 50),
-                        cv2.FONT_HERSHEY_PLAIN, 4, (0, 0, 0), 5, cv2.LINE_AA)
-            pass
-        else:
-            cv2.putText(dump_img, proc_name, (0, 50),
-                        cv2.FONT_HERSHEY_PLAIN, 4, (0, 0, 0), 5, cv2.LINE_AA)
+            dump_img = result['img'].copy()
+        cv2.putText(dump_img, proc_name, (0, 50),
+                    cv2.FONT_HERSHEY_PLAIN, 4, (0, 0, 0), 5, cv2.LINE_AA)
         return dump_img
 
     def _create_result_txt(self, xml_data):
