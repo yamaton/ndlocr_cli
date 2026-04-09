@@ -125,7 +125,7 @@ class LayoutExtractionProcess(BaseInferenceProcess):
         return output_items
 
     def _cpu_postprocess_threaded(self, items, all_results, classes, score_thr, crop_params):
-        """ThreadPoolExecutor で XML 変換 + crop 収集を並列実行する。"""
+        """ThreadPoolExecutor で XML 構築 + crop 収集を並列実行する。"""
         from submodules.text_recognition_lightning.src.datamodules.ndl_components.ndl_dataset import (
             XMLRawDatasetWithCli, XMLRawAttrWithCli,
         )
@@ -133,8 +133,9 @@ class LayoutExtractionProcess(BaseInferenceProcess):
         transforms = crop_params['transforms']
         batch_max_length = crop_params['batch_max_length']
         additional_elements = crop_params['additional_elements']
+        def process_page(item, result):
+            xml_tree = LayoutExtractionProcess._build_xml(item, result, classes, score_thr)
 
-        def process_page(item, result, xml_tree):
             pil_image = Image.fromarray(item['img'])
             pid = os.path.basename(
                 item.get('img_path', item.get('img_file_name', 'x'))
@@ -154,20 +155,16 @@ class LayoutExtractionProcess(BaseInferenceProcess):
             attr_iter.set_data(xml_tree, pid)
             line_elems = list(attr_iter)
 
-            return tensors, line_elems
-
-        # lxml はスレッドセーフでないため XML 構築はメインスレッドで実行
-        xml_trees = [self._build_xml(item, result, classes, score_thr)
-                     for item, result in zip(items, all_results)]
+            return xml_tree, tensors, line_elems
 
         output_items = []
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = [
-                pool.submit(process_page, item, result, xml_tree)
-                for item, result, xml_tree in zip(items, all_results, xml_trees)
+                pool.submit(process_page, item, result)
+                for item, result in zip(items, all_results)
             ]
-            for item, xml_tree, future in zip(items, xml_trees, futures):
-                tensors, line_elems = future.result()
+            for item, future in zip(items, futures):
+                xml_tree, tensors, line_elems = future.result()
                 output_data = item.copy()
                 output_data['xml'] = xml_tree
                 output_data['_line_tensors'] = tensors
@@ -183,9 +180,5 @@ class LayoutExtractionProcess(BaseInferenceProcess):
         xml_str = convert_to_xml_string_with_data(
             img.shape[1], img.shape[0], item['img_file_name'],
             classes, result, score_thr=score_thr)
-        result_xml = lxml.etree.fromstring(xml_str)
-        node = lxml.etree.fromstring(
-            '<?xml version="1.0" standalone="yes"?>'
-            '<OCRDATASET xmlns="">\n</OCRDATASET>\n')
-        node.append(result_xml)
-        return ET.ElementTree(ET.fromstring(lxml.etree.tostring(node)))
+        return ET.ElementTree(ET.fromstring(
+            '<OCRDATASET>{}</OCRDATASET>'.format(xml_str)))
