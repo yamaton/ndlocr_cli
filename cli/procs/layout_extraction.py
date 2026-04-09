@@ -4,7 +4,6 @@
 # https://creativecommons.org/licenses/by/4.0/
 
 
-import copy
 import xml.etree.ElementTree as ET
 import lxml
 import numpy
@@ -66,7 +65,7 @@ class LayoutExtractionProcess(BaseInferenceProcess):
             基本的にinput_dataと同じ構造です。
         """
         print('### Layout Extraction Process ###')
-        output_data = copy.deepcopy(input_data)
+        output_data = input_data.copy()
         inference_output = self._run_submodule_inference(
             img=input_data['img'],
             img_path=input_data['img_file_name'],

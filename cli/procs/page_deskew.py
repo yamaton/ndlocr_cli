@@ -4,7 +4,6 @@
 # https://creativecommons.org/licenses/by/4.0/
 
 
-import copy
 import numpy
 
 from .base_proc import BaseInferenceProcess
@@ -78,7 +77,7 @@ class PageDeskewProcess(BaseInferenceProcess):
 
         # Create result to pass img_path and img data
         result = []
-        output_data = copy.deepcopy(input_data)
+        output_data = input_data.copy()
         output_data['img'] = inference_output
         result.append(output_data)
 

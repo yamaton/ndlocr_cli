@@ -4,7 +4,6 @@
 # https://creativecommons.org/licenses/by/4.0/
 
 
-import copy
 import numpy
 import os
 
@@ -88,7 +87,7 @@ class PageSeparation(BaseInferenceProcess):
         # Create result to pass img_path and img data
         result = []
         for id, single_output_img in enumerate(inference_output):
-            output_data = copy.deepcopy(input_data)
+            output_data = input_data.copy()
             output_data['img'] = single_output_img
             output_data['orig_img_path'] = input_data['img_path']
 
