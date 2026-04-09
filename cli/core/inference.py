@@ -67,6 +67,19 @@ class OcrInferrer:
             self.proc_time_statistics[proc.proc_name] = []
         self.xml_template = '<?xml version="1.0" encoding="utf-8" standalone="yes"?>\n<OCRDATASET></OCRDATASET>'
 
+        # line_ocr の crop パラメータを抽出 (layout_ext での事前 crop 収集用)
+        self._line_ocr_crop_params = None
+        for proc in self.proc_list:
+            if hasattr(proc, '_object_dict'):
+                dm = proc._object_dict['datamodule']
+                ocr_cfg = proc._hydra_cfg
+                self._line_ocr_crop_params = {
+                    'transforms': dm.transforms_test,
+                    'batch_max_length': ocr_cfg.datamodule.test_batch_max_length,
+                    'additional_elements': ocr_cfg.datamodule.additional_elements,
+                }
+                break
+
     def run(self):
         """
         self.cfgに保存された設定に基づいた推論処理を実行します。
@@ -341,7 +354,7 @@ class OcrInferrer:
         do_batch() があればバッチ処理、なければ従来の per-item 処理。
         """
         if hasattr(proc, 'do_batch') and not self.cfg['dump']:
-            return proc.do_batch(items)
+            return proc.do_batch(items, crop_params=self._line_ocr_crop_params)
         # フォールバック: per-item
         results = []
         for idx, item in enumerate(items):

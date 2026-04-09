@@ -4,10 +4,14 @@
 # https://creativecommons.org/licenses/by/4.0/
 
 
+import os
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
+
 import lxml
 import lxml.etree
 import numpy
+from PIL import Image
 
 from mmdet.apis import inference_detector
 from submodules.ndl_layout.tools.process_textblock import convert_to_xml_string_with_data
@@ -87,8 +91,11 @@ class LayoutExtractionProcess(BaseInferenceProcess):
         result.append(output_data)
         return result
 
-    def do_batch(self, items, gpu_sub_batch=4):
-        """バッチ GPU 推論 + per-item CPU 後処理でレイアウト抽出を実行する。"""
+    def do_batch(self, items, crop_params=None, gpu_sub_batch=4):
+        """バッチ GPU 推論 + per-item CPU 後処理でレイアウト抽出を実行する。
+        crop_params が渡された場合、CPU 後処理と line_ocr の crop 収集を
+        ThreadPoolExecutor で並列実行する。
+        """
         imgs = [item['img'] for item in items]
         score_thr = self.cfg['layout_extraction']['score_thr']
         classes = self._inferencer.detector.classes
@@ -102,23 +109,83 @@ class LayoutExtractionProcess(BaseInferenceProcess):
                 sub_results = [sub_results]
             all_results.extend(sub_results)
 
-        # CPU 後処理: per-item で XML 生成
+        # CPU 後処理 (+ crop 収集)
+        if crop_params:
+            return self._cpu_postprocess_threaded(items, all_results, classes, score_thr, crop_params)
+        else:
+            return self._cpu_postprocess_sequential(items, all_results, classes, score_thr)
+
+    def _cpu_postprocess_sequential(self, items, all_results, classes, score_thr):
+        """逐次 CPU 後処理 (フォールバック)。"""
         output_items = []
         for item, result in zip(items, all_results):
             output_data = item.copy()
-            img = item['img']
-            xml_str = convert_to_xml_string_with_data(
-                img.shape[1], img.shape[0], item['img_file_name'],
-                classes, result, score_thr=score_thr)
-
-            result_xml = lxml.etree.fromstring(xml_str)
-            node = lxml.etree.fromstring(
-                '<?xml version="1.0" standalone="yes"?>'
-                '<OCRDATASET xmlns="">\n</OCRDATASET>\n')
-            node.append(result_xml)
-
-            output_data['xml'] = ET.ElementTree(
-                ET.fromstring(lxml.etree.tostring(node)))
+            output_data['xml'] = self._build_xml(item, result, classes, score_thr)
             output_items.append(output_data)
+        return output_items
+
+    def _cpu_postprocess_threaded(self, items, all_results, classes, score_thr, crop_params):
+        """ThreadPoolExecutor で XML 変換 + crop 収集を並列実行する。"""
+        from submodules.text_recognition_lightning.src.datamodules.ndl_components.ndl_dataset import (
+            XMLRawDatasetWithCli, XMLRawAttrWithCli,
+        )
+
+        transforms = crop_params['transforms']
+        batch_max_length = crop_params['batch_max_length']
+        additional_elements = crop_params['additional_elements']
+
+        def process_page(item, result, xml_tree):
+            pil_image = Image.fromarray(item['img'])
+            pid = os.path.basename(
+                item.get('img_path', item.get('img_file_name', 'x'))
+            ).split('_')[0]
+
+            crop_ds = XMLRawDatasetWithCli(
+                transforms=transforms,
+                batch_max_length=batch_max_length,
+                additional_elements=additional_elements,
+            )
+            crop_ds.set_data(pil_image, xml_tree, pid)
+            tensors = [t for t, _, _ in crop_ds]
+
+            attr_iter = XMLRawAttrWithCli(
+                item, additional_elements=additional_elements,
+            )
+            attr_iter.set_data(xml_tree, pid)
+            line_elems = list(attr_iter)
+
+            return tensors, line_elems
+
+        # lxml はスレッドセーフでないため XML 構築はメインスレッドで実行
+        xml_trees = [self._build_xml(item, result, classes, score_thr)
+                     for item, result in zip(items, all_results)]
+
+        output_items = []
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [
+                pool.submit(process_page, item, result, xml_tree)
+                for item, result, xml_tree in zip(items, all_results, xml_trees)
+            ]
+            for item, xml_tree, future in zip(items, xml_trees, futures):
+                tensors, line_elems = future.result()
+                output_data = item.copy()
+                output_data['xml'] = xml_tree
+                output_data['_line_tensors'] = tensors
+                output_data['_line_elements'] = line_elems
+                output_items.append(output_data)
 
         return output_items
+
+    @staticmethod
+    def _build_xml(item, result, classes, score_thr):
+        """mmdet 結果から stdlib ElementTree を構築する。"""
+        img = item['img']
+        xml_str = convert_to_xml_string_with_data(
+            img.shape[1], img.shape[0], item['img_file_name'],
+            classes, result, score_thr=score_thr)
+        result_xml = lxml.etree.fromstring(xml_str)
+        node = lxml.etree.fromstring(
+            '<?xml version="1.0" standalone="yes"?>'
+            '<OCRDATASET xmlns="">\n</OCRDATASET>\n')
+        node.append(result_xml)
+        return ET.ElementTree(ET.fromstring(lxml.etree.tostring(node)))

@@ -106,7 +106,7 @@ class PageSeparation(BaseInferenceProcess):
 
         return result
 
-    def do_batch(self, items):
+    def do_batch(self, items, **kwargs):
         """バッチ GPU 推論で全アイテムのノド元分割を実行する。"""
         imgs = [item['img'] for item in items]
         results = inference_detector(self._detector.model, imgs)
