@@ -165,6 +165,10 @@ def parse_cfg(cfg_dict):
         print('[ERROR] Unexpected input directory structure type: {0}.'.format(infer_cfg['input_structure']), file=sys.stderr)
         return None
 
+    # pipeline config defaults
+    infer_cfg.setdefault('pipeline', {})
+    infer_cfg['pipeline'].setdefault('chunk_size', 4)
+
     return infer_cfg
 
 

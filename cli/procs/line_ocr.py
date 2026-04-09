@@ -2,9 +2,14 @@
 #
 # This software is released under the CC BY 4.0.
 # https://creativecommons.org/licenses/by/4.0/
+import copy
+import os
+
 import hydra
 import numpy
+import torch
 import xml.etree.ElementTree as ET
+from PIL import Image
 
 from .base_proc import BaseInferenceProcess
 
@@ -96,3 +101,92 @@ class LineOcrProcess(BaseInferenceProcess):
         result.append(output_data)
 
         return result
+
+    def do_batch(self, items):
+        """全ページの LINE crop を一括収集し、Trainer を迂回して直接 GPU 推論する。"""
+        from submodules.text_recognition_lightning.src.datamodules.ndl_components.ndl_dataset import (
+            XMLRawDatasetWithCli, XMLRawAttrWithCli,
+        )
+
+        cfg = self._hydra_cfg
+        model = self._object_dict['model']
+        datamodule = self._object_dict['datamodule']
+
+        # model を GPU に配置 (初回のみ移動)
+        device = next(model.parameters()).device
+        if str(device) == 'cpu':
+            model.cuda()
+        model.eval()
+
+        output_items = []
+        all_tensors = []
+        line_metadata = []       # (page_idx, line_idx)
+        page_line_elements = []  # per-page LINE 要素参照リスト
+
+        # Phase A: 全ページから LINE crop を収集
+        for page_idx, item in enumerate(items):
+            output_data = item.copy()
+            output_data['xml'] = copy.deepcopy(item['xml'])
+            output_items.append(output_data)
+
+            pil_image = Image.fromarray(item['img'])
+            pid = os.path.basename(item.get('img_path', item.get('img_file_name', 'unknown'))).split('_')[0]
+
+            # crop 用 dataset (transforms 付き)
+            crop_dataset = XMLRawDatasetWithCli(
+                transforms=datamodule.transforms_test,
+                batch_max_length=cfg.datamodule.test_batch_max_length,
+                additional_elements=cfg.datamodule.additional_elements,
+            )
+            crop_dataset.set_data(pil_image, item['xml'], pid)
+
+            line_idx = 0
+            for tensor, label, meta in crop_dataset:
+                all_tensors.append(tensor)
+                line_metadata.append((page_idx, line_idx))
+                line_idx += 1
+
+            # 書き戻し用 LINE 要素参照 (同じ反復順序)
+            attr_iter = XMLRawAttrWithCli(
+                output_data,
+                additional_elements=cfg.datamodule.additional_elements,
+            )
+            attr_iter.set_data(output_data['xml'], pid)
+            page_line_elements.append(list(attr_iter))
+
+        if not all_tensors:
+            return output_items
+
+        # 反復順序の安全ガード
+        from collections import Counter
+        crop_counts = Counter(pi for pi, _ in line_metadata)
+        for page_idx, elems in enumerate(page_line_elements):
+            assert len(elems) == crop_counts.get(page_idx, 0), (
+                f"page {page_idx}: LINE element count mismatch: "
+                f"crops={crop_counts.get(page_idx, 0)}, attrs={len(elems)}"
+            )
+
+        # Phase B: バッチ GPU 推論
+        batch_size = cfg.datamodule.batch_size  # 128
+        all_texts = []
+
+        with torch.no_grad():
+            for i in range(0, len(all_tensors), batch_size):
+                batch = torch.stack(all_tensors[i:i + batch_size]).cuda()
+                preds = model(batch)
+                if isinstance(preds, tuple):
+                    preds = preds[0]
+                bs = preds.size(0)
+                preds_size = torch.full((bs,), preds.size(1), dtype=torch.int32)
+                preds_index = preds.argmax(2)
+                texts = model.converter.decode(preds_index.data, preds_size.data)
+                all_texts.extend(texts)
+
+        del all_tensors  # CPU RAM 早期解放
+
+        # Phase C: 結果を LINE 要素に書き戻し
+        for (page_idx, line_idx), text in zip(line_metadata, all_texts):
+            line_elem = page_line_elements[page_idx][line_idx]
+            line_elem.attrib['STRING'] = text
+
+        return output_items

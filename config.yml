@@ -39,3 +39,5 @@ line_attribute:
   classifier: 'rf'
   title_model: 'submodules/text_recognition_lightning/models/rf_title/model.pkl'
   author_model: 'submodules/text_recognition_lightning/models/rf_author/model.pkl'
+pipeline:
+  chunk_size: 4

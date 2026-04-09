@@ -6,7 +6,11 @@
 
 import xml.etree.ElementTree as ET
 import lxml
+import lxml.etree
 import numpy
+
+from mmdet.apis import inference_detector
+from submodules.ndl_layout.tools.process_textblock import convert_to_xml_string_with_data
 
 from .base_proc import BaseInferenceProcess
 
@@ -82,3 +86,39 @@ class LayoutExtractionProcess(BaseInferenceProcess):
             output_data['dump_img'] = inference_output['dump_img']
         result.append(output_data)
         return result
+
+    def do_batch(self, items, gpu_sub_batch=4):
+        """バッチ GPU 推論 + per-item CPU 後処理でレイアウト抽出を実行する。"""
+        imgs = [item['img'] for item in items]
+        score_thr = self.cfg['layout_extraction']['score_thr']
+        classes = self._inferencer.detector.classes
+
+        # GPU 推論をサブバッチで実行 (VRAM 制約)
+        all_results = []
+        for i in range(0, len(imgs), gpu_sub_batch):
+            sub_batch = imgs[i:i + gpu_sub_batch]
+            sub_results = inference_detector(self._inferencer.detector.model, sub_batch)
+            if not isinstance(sub_results, list):
+                sub_results = [sub_results]
+            all_results.extend(sub_results)
+
+        # CPU 後処理: per-item で XML 生成
+        output_items = []
+        for item, result in zip(items, all_results):
+            output_data = item.copy()
+            img = item['img']
+            xml_str = convert_to_xml_string_with_data(
+                img.shape[1], img.shape[0], item['img_file_name'],
+                classes, result, score_thr=score_thr)
+
+            result_xml = lxml.etree.fromstring(xml_str)
+            node = lxml.etree.fromstring(
+                '<?xml version="1.0" standalone="yes"?>'
+                '<OCRDATASET xmlns="">\n</OCRDATASET>\n')
+            node.append(result_xml)
+
+            output_data['xml'] = ET.ElementTree(
+                ET.fromstring(lxml.etree.tostring(node)))
+            output_items.append(output_data)
+
+        return output_items

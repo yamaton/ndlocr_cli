@@ -13,6 +13,7 @@ import sys
 import time
 import xml
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 
 import torch
 
@@ -92,7 +93,7 @@ class OcrInferrer:
                 if self.cfg['ruby_only']:
                     pred_list = self._infer_ruby_only(single_outputdir_data)
                 else:
-                    pred_list = self._infer(single_outputdir_data)
+                    pred_list = self._infer_chunked(single_outputdir_data)
 
                 # save inferenced xml in xml directory
                 if (self.cfg['save_xml'] or self.cfg['partial_infer']) and (self.cfg['proc_range']['end'] > 1):
@@ -283,6 +284,121 @@ class OcrInferrer:
             print('########  END PAGE INFERENCE PROCESS  ########')
 
         return pred_list
+
+    def _infer_chunked(self, single_outputdir_data):
+        """
+        チャンク単位でステージを順に実行する推論処理。
+        N ページをまとめて各ステージを通すことで GPU の連続稼働を改善する。
+        """
+        pred_list = []
+        img_list = single_outputdir_data['img_list']
+        chunk_size = self.cfg['pipeline']['chunk_size']
+        output_dir = single_outputdir_data['output_dir']
+
+        for chunk_start in range(0, len(img_list), chunk_size):
+            chunk_paths = img_list[chunk_start:chunk_start + chunk_size]
+
+            # チャンク内の全画像を読み込み
+            items = []
+            for img_path in chunk_paths:
+                item_data = self._get_single_image_file_data(img_path, single_outputdir_data)
+                if item_data is None:
+                    print('[ERROR] Failed to get single page input data for image:{0}'.format(img_path), file=sys.stderr)
+                    continue
+                items.extend(item_data)
+
+            if not items:
+                continue
+
+            print('######## START CHUNK INFERENCE ({} pages) ########'.format(len(chunk_paths)))
+            torch.cuda.empty_cache()
+            start_chunk = time.time()
+
+            # ステージ単位で全アイテムを処理
+            for proc in self.proc_list:
+                start_proc = time.time()
+                items = self._run_proc_on_chunk(proc, items)
+                proc_time = time.time() - start_proc
+                per_item = proc_time / max(len(chunk_paths), 1)
+                for _ in range(len(chunk_paths)):
+                    self.proc_time_statistics[proc.proc_name].append(per_item)
+
+            chunk_time = time.time() - start_chunk
+            per_page = chunk_time / len(chunk_paths)
+            for _ in range(len(chunk_paths)):
+                self.total_time_statistics.append(per_page)
+
+            # 結果保存
+            self._save_chunk_results(items, output_dir)
+            pred_list.extend(items)
+            print('########  END CHUNK INFERENCE  ########')
+
+        return pred_list
+
+    def _run_proc_on_chunk(self, proc, items):
+        """
+        1ステージをチャンク内の全アイテムに適用する。
+        do_batch() があればバッチ処理、なければ従来の per-item 処理。
+        """
+        if hasattr(proc, 'do_batch') and not self.cfg['dump']:
+            return proc.do_batch(items)
+        # フォールバック: per-item
+        results = []
+        for idx, item in enumerate(items):
+            result = proc.do(idx, item)
+            results.extend(result)
+        return results
+
+    def _save_chunk_results(self, items, output_dir):
+        """チャンク内の全アイテムの推論結果を保存する。"""
+        if self.cfg['proc_range']['end'] <= 2:
+            return
+
+        # orig_img_path でグルーピング (facing page の L/R をまとめる)
+        groups = OrderedDict()
+        for item in items:
+            orig_path = item.get('orig_img_path', item.get('img_path', ''))
+            if orig_path not in groups:
+                groups[orig_path] = []
+            groups[orig_path].append(item)
+
+        for orig_path, group_items in groups.items():
+            # 画像保存
+            if self.cfg['save_image'] or self.cfg['partial_infer']:
+                for item in group_items:
+                    if self.cfg['partial_infer']:
+                        img_output_dir = os.path.join(output_dir, 'img')
+                        self._save_image(item['img'], item['img_file_name'], img_output_dir)
+                    pred_img = self._create_result_image(item, self.proc_list[-1].proc_name)
+                    img_output_dir = os.path.join(output_dir, 'pred_img')
+                    self._save_image(pred_img, item['img_file_name'], img_output_dir)
+
+            # テキスト保存
+            sum_main_txt = ''
+            sum_cap_txt = ''
+            sum_ruby_txt = None
+            if self.cfg['ruby_read']:
+                sum_ruby_txt = ''
+
+            # 縦書き判定 → 逆順
+            vertical_count = sum(1 for item in group_items
+                                 if 'xml' in item and item['xml'] is not None
+                                 and self._is_vertical_text_xml(item['xml']))
+            items_for_txt = group_items
+            if vertical_count >= len(group_items):
+                items_for_txt = list(reversed(group_items))
+
+            for item in items_for_txt:
+                if 'xml' not in item or item['xml'] is None:
+                    continue
+                main_txt, cap_txt = self._create_result_txt(item['xml'])
+                sum_main_txt += main_txt + '\n'
+                sum_cap_txt += cap_txt + '\n'
+                if self.cfg['ruby_read'] and 'ruby_txt' in item:
+                    sum_ruby_txt += item['ruby_txt'] + '\n'
+
+            self._save_pred_txt(sum_main_txt, sum_cap_txt, sum_ruby_txt,
+                                os.path.basename(orig_path), output_dir)
 
     def _get_single_dir_data(self, input_dir):
         """

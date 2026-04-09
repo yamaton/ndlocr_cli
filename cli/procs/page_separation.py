@@ -7,6 +7,8 @@
 import numpy
 import os
 
+from mmdet.apis import inference_detector
+
 from .base_proc import BaseInferenceProcess
 
 
@@ -103,3 +105,34 @@ class PageSeparation(BaseInferenceProcess):
             result.append(output_data)
 
         return result
+
+    def do_batch(self, items):
+        """バッチ GPU 推論で全アイテムのノド元分割を実行する。"""
+        imgs = [item['img'] for item in items]
+        results = inference_detector(self._detector.model, imgs)
+        if not isinstance(results, list):
+            results = [results]
+
+        output_items = []
+        for item, result in zip(items, results):
+            split_imgs = self._detector.divide(item['img'], result, score_thr=0.2)
+            img_L = split_imgs[0]
+            img_R = split_imgs[1] if len(split_imgs) > 1 else None
+
+            if img_R is not None:
+                for suffix, img in [('L', img_L), ('R', img_R)]:
+                    output_data = item.copy()
+                    output_data['img'] = img
+                    output_data['orig_img_path'] = item['img_path']
+                    stem, _ = os.path.splitext(os.path.basename(item['img_path']))
+                    output_data['img_file_name'] = stem + '_' + suffix + '.jpg'
+                    output_items.append(output_data)
+            else:
+                output_data = item.copy()
+                output_data['img'] = img_L
+                output_data['orig_img_path'] = item['img_path']
+                stem, _ = os.path.splitext(os.path.basename(item['img_path']))
+                output_data['img_file_name'] = stem + '_L.jpg'
+                output_items.append(output_data)
+
+        return output_items
