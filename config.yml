@@ -33,9 +33,9 @@ line_ocr:
     ノンブル: True
     ルビ: True
 line_order: True
-ruby_read: True
+ruby_read: False
 line_attribute:
-  add_title_author: True
+  add_title_author: False
   classifier: 'rf'
   title_model: 'submodules/text_recognition_lightning/models/rf_title/model.pkl'
   author_model: 'submodules/text_recognition_lightning/models/rf_author/model.pkl'
