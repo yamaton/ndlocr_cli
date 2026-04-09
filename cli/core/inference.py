@@ -516,6 +516,9 @@ class OcrInferrer:
 
         proc_list = []
         for i in range(cfg['proc_range']['start'], cfg['proc_range']['end'] + 1):
+            # Skip deskew (index 1) when disabled in config
+            if i == 1 and not cfg['page_deskew'].get('enabled', True):
+                continue
             proc_list.append(self.full_proc_list[i](cfg, i))
         if cfg['line_order']:
             if cfg['proc_range']['end'] <= 2:

@@ -11,6 +11,7 @@ page_separation:
   allow_invalid_num_output: True
   silence_tf_log: True
 page_deskew:
+  enabled: false
   r_angle: 0
   skew_max: 4.0
   acc_deg: 0.1
