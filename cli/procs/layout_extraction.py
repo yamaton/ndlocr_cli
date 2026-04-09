@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import lxml
 import lxml.etree
 import numpy
+import torch
 from PIL import Image
 
 from mmdet.apis import inference_detector
@@ -95,25 +96,39 @@ class LayoutExtractionProcess(BaseInferenceProcess):
         """バッチ GPU 推論 + per-item CPU 後処理でレイアウト抽出を実行する。
         crop_params が渡された場合、CPU 後処理と line_ocr の crop 収集を
         ThreadPoolExecutor で並列実行する。
+
+        GPU推論とCPU後処理をサブバッチ単位でインターリーブし、
+        処理済みの mask テンソルを早期解放して VRAM を節約する。
         """
         imgs = [item['img'] for item in items]
         score_thr = self.cfg['layout_extraction']['score_thr']
         classes = self._inferencer.detector.classes
 
-        # GPU 推論をサブバッチで実行 (VRAM 制約)
-        all_results = []
+        output_items = []
         for i in range(0, len(imgs), gpu_sub_batch):
-            sub_batch = imgs[i:i + gpu_sub_batch]
-            sub_results = inference_detector(self._inferencer.detector.model, sub_batch)
+            sub_imgs = imgs[i:i + gpu_sub_batch]
+            sub_items = items[i:i + gpu_sub_batch]
+
+            # GPU 推論
+            sub_results = inference_detector(self._inferencer.detector.model, sub_imgs)
             if not isinstance(sub_results, list):
                 sub_results = [sub_results]
-            all_results.extend(sub_results)
 
-        # CPU 後処理 (+ crop 収集)
-        if crop_params:
-            return self._cpu_postprocess_threaded(items, all_results, classes, score_thr, crop_params)
-        else:
-            return self._cpu_postprocess_sequential(items, all_results, classes, score_thr)
+            # CPU 後処理 (mask を CPU 転送して消費)
+            if crop_params:
+                sub_output = self._cpu_postprocess_threaded(
+                    sub_items, sub_results, classes, score_thr, crop_params)
+            else:
+                sub_output = self._cpu_postprocess_sequential(
+                    sub_items, sub_results, classes, score_thr)
+            output_items.extend(sub_output)
+
+            # GPU mask テンソルを解放
+            for result in sub_results:
+                self._release_gpu_tensors(result)
+            del sub_results
+
+        return output_items
 
     def _cpu_postprocess_sequential(self, items, all_results, classes, score_thr):
         """逐次 CPU 後処理 (フォールバック)。"""
@@ -121,6 +136,7 @@ class LayoutExtractionProcess(BaseInferenceProcess):
         for item, result in zip(items, all_results):
             output_data = item.copy()
             output_data['xml'] = self._build_xml(item, result, classes, score_thr)
+            self._release_gpu_tensors(result)
             output_items.append(output_data)
         return output_items
 
@@ -135,6 +151,7 @@ class LayoutExtractionProcess(BaseInferenceProcess):
         additional_elements = crop_params['additional_elements']
         def process_page(item, result):
             xml_tree = LayoutExtractionProcess._build_xml(item, result, classes, score_thr)
+            LayoutExtractionProcess._release_gpu_tensors(result)
 
             pil_image = Image.fromarray(item['img'])
             pid = os.path.basename(
@@ -172,6 +189,14 @@ class LayoutExtractionProcess(BaseInferenceProcess):
                 output_items.append(output_data)
 
         return output_items
+
+    @staticmethod
+    def _release_gpu_tensors(result):
+        """処理済み mmdet 結果の GPU テンソルを解放する。"""
+        try:
+            del result.pred_instances
+        except AttributeError:
+            pass
 
     @staticmethod
     def _build_xml(item, result, classes, score_thr):
