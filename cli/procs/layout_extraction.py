@@ -92,43 +92,30 @@ class LayoutExtractionProcess(BaseInferenceProcess):
         result.append(output_data)
         return result
 
-    def do_batch(self, items, crop_params=None, gpu_sub_batch=4):
+    def do_batch(self, items, crop_params=None, gpu_sub_batch=None):
         """バッチ GPU 推論 + per-item CPU 後処理でレイアウト抽出を実行する。
         crop_params が渡された場合、CPU 後処理と line_ocr の crop 収集を
         ThreadPoolExecutor で並列実行する。
 
-        GPU推論とCPU後処理をサブバッチ単位でインターリーブし、
-        処理済みの mask テンソルを早期解放して VRAM を節約する。
+        text_block-only mask 生成 (TextBlockMaskCascadeRoIHead) により
+        mask VRAM が 77% 削減されたため、全画像を一括推論し結果を蓄積する。
+        CPU 後処理は per-item で GPU テンソルを解放する。
         """
         imgs = [item['img'] for item in items]
         score_thr = self.cfg['layout_extraction']['score_thr']
         classes = self._inferencer.detector.classes
 
-        output_items = []
-        for i in range(0, len(imgs), gpu_sub_batch):
-            sub_imgs = imgs[i:i + gpu_sub_batch]
-            sub_items = items[i:i + gpu_sub_batch]
+        # GPU 推論 (一括)
+        all_results = inference_detector(self._inferencer.detector.model, imgs)
+        if not isinstance(all_results, list):
+            all_results = [all_results]
 
-            # GPU 推論
-            sub_results = inference_detector(self._inferencer.detector.model, sub_imgs)
-            if not isinstance(sub_results, list):
-                sub_results = [sub_results]
-
-            # CPU 後処理 (mask を CPU 転送して消費)
-            if crop_params:
-                sub_output = self._cpu_postprocess_threaded(
-                    sub_items, sub_results, classes, score_thr, crop_params)
-            else:
-                sub_output = self._cpu_postprocess_sequential(
-                    sub_items, sub_results, classes, score_thr)
-            output_items.extend(sub_output)
-
-            # GPU mask テンソルを解放
-            for result in sub_results:
-                self._release_gpu_tensors(result)
-            del sub_results
-
-        return output_items
+        # CPU 後処理 (per-item GPU テンソル解放含む)
+        if crop_params:
+            return self._cpu_postprocess_threaded(
+                items, all_results, classes, score_thr, crop_params)
+        return self._cpu_postprocess_sequential(
+            items, all_results, classes, score_thr)
 
     def _cpu_postprocess_sequential(self, items, all_results, classes, score_thr):
         """逐次 CPU 後処理 (フォールバック)。"""
