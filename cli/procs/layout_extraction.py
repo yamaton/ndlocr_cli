@@ -194,6 +194,8 @@ class LayoutExtractionProcess(BaseInferenceProcess):
     def _release_gpu_tensors(result):
         """処理済み mmdet 結果の GPU テンソルを解放する。"""
         try:
+            pi = result.pred_instances
+            pi.__dict__.pop('_tb_masks', None)
             del result.pred_instances
         except AttributeError:
             pass
